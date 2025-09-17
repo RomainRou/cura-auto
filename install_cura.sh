@@ -1,103 +1,66 @@
-#!/usr/bin/env bash
+bash -c 'set -e
+# ----------------------------
+# Config
+# ----------------------------
+VMID=9000
+VM_NAME="cura-vm"
+ISO_PATH="/var/lib/vz/template/iso/debian-12.6.0-amd64-netinst.iso"
+STORAGE="local-lvm"
+DISK_SIZE="20G"
+RAM="2048"
+CPUS="2"
+BRIDGE="vmbr0"
+USER_NAME="curauser"
+USER_PASS="CuraPass123"
+
+# ----------------------------
+# Création VM
+# ----------------------------
+qm create $VMID --name $VM_NAME --memory $RAM --cores $CPUS --net0 virtio,bridge=$BRIDGE --boot c --bootdisk scsi0
+qm importdisk $VMID $ISO_PATH $STORAGE
+qm set $VMID --scsihw virtio-scsi-pci --scsi0 $STORAGE:$DISK_SIZE
+qm set $VMID --ide2 $STORAGE:cloudinit
+qm set $VMID --boot c --bootdisk scsi0
+qm set $VMID --serial0 socket --vga serial0
+
+# ----------------------------
+# Configuration Cloud-Init
+# ----------------------------
+qm set $VMID --ciuser $USER_NAME --cipassword $USER_PASS --citype nocloud
+qm set $VMID --agent 1
+
+# ----------------------------
+# Script d\'installation Cura
+# ----------------------------
+cat << "EOF" > /tmp/setup_cura.sh
+#!/bin/bash
 set -e
-
-# ========================
-#  Auto-install Debian + Cura on Proxmox
-# ========================
-
-function header_info {
-  clear
-  cat <<"EOF"
-   ____                 _             
-  / ___|_ __ __ _ _ __ | | _____ _ __ 
- | |   | '__/ _` | '_ \| |/ / _ \ '__|
- | |___| | | (_| | | | |   <  __/ |   
-  \____|_|  \__,_|_| |_|_|\_\___|_|   
+apt update && apt upgrade -y
+apt install -y python3-pip python3-pyqt5 python3-setuptools xorg openbox wget
+pip3 install --upgrade pip
+pip3 install --user cura
+cat << "EOL" > /home/$USER/start_cura.sh
+#!/bin/bash
+xinit -- /usr/bin/openbox-session &
+sleep 2
+~/.local/bin/cura
+EOL
+chmod +x /home/$USER/start_cura.sh
+(crontab -l 2>/dev/null; echo "@reboot /home/$USER/start_cura.sh") | crontab -
 EOF
-}
 
-header_info
-echo -e "\n Loading..."
+# ----------------------------
+# Injection du script dans la VM via cloud-init
+# ----------------------------
+qm set $VMID --ciuser $USER_NAME --cipassword $USER_PASS --sshkeys /root/.ssh/id_rsa.pub
+qm set $VMID --cicustom "user=local:snippets/setup_cura.sh"
+mkdir -p /var/lib/vz/snippets
+cp /tmp/setup_cura.sh /var/lib/vz/snippets/setup_cura.sh
+chmod +x /var/lib/vz/snippets/setup_cura.sh
 
-# -------- USER VARIABLES --------
-VMID=${VMID:-111}
-VMNAME=${VMNAME:-CuraZeroBoot}
-MEM=${MEM:-4096}           # RAM in MB
-CORES=${CORES:-2}
-DISK=${DISK:-32}           # Disk in GB
-BRIDGE=${BRIDGE:-vmbr0}
-STORAGE=${STORAGE:-local-lvm}
-ISO_NAME="debian-13.1.0-amd64-netinst.iso"
-ISO_PATH="/var/lib/vz/template/iso/$ISO_NAME"
-PRESEED_DIR="/var/www/html/cura"
-PRESEED_URL="http://$(hostname -I | awk '{print $1}')/cura/preseed.cfg"
-CURA_SCRIPT_URL="https://raw.githubusercontent.com/RomainRou/cura-auto/main/install_cura.sh"
-
-# -------- FUNCTIONS --------
-function msg_info()  { echo -ne "[..] $1...\n"; }
-function msg_ok()    { echo -e "[✓] $1"; }
-function msg_error() { echo -e "[✗] $1"; }
-
-# -------- CHECK ROOT --------
-if [[ $EUID -ne 0 ]]; then
-  msg_error "Run this script as root."
-  exit 1
-fi
-
-# -------- DOWNLOAD ISO --------
-mkdir -p /var/lib/vz/template/iso
-if [ ! -f "$ISO_PATH" ]; then
-  msg_info "Downloading Debian ISO..."
-  wget -O "$ISO_PATH" "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$ISO_NAME"
-  msg_ok "Downloaded $ISO_NAME"
-else
-  msg_ok "Debian ISO already exists"
-fi
-
-# -------- CREATE PRESEED --------
-mkdir -p "$PRESEED_DIR"
-cat <<EOF > $PRESEED_DIR/preseed.cfg
-d-i debian-installer/locale string en_US
-d-i keyboard-configuration/xkb-keymap select us
-d-i netcfg/get_hostname string cura-vm
-d-i netcfg/get_domain string local
-d-i mirror/country string manual
-d-i mirror/http/hostname string ftp.debian.org
-d-i mirror/http/directory string /debian
-d-i mirror/http/proxy string
-d-i passwd/user-fullname string Cura User
-d-i passwd/username string cura
-d-i passwd/user-password password cura
-d-i passwd/user-password-again password cura
-d-i partman-auto/method string regular
-d-i partman-auto/choose_recipe select atomic
-d-i partman/confirm boolean true
-d-i partman/confirm_nooverwrite boolean true
-tasksel tasksel/first multiselect standard, ssh-server
-d-i finish-install/reboot_in_progress note
-d-i preseed/late_command string wget -O /tmp/install_cura.sh $CURA_SCRIPT_URL && bash /tmp/install_cura.sh
-EOF
-msg_ok "Preseed file created"
-
-# -------- CREATE VM --------
-msg_info "Creating VM $VMNAME ($VMID) on $STORAGE..."
-qm create $VMID \
-    -name $VMNAME \
-    -memory $MEM \
-    -cores $CORES \
-    -net0 virtio,bridge=$BRIDGE \
-    -scsihw virtio-scsi-pci \
-    -ostype l26
-
-# Create disk on local-lvm
-pvesm alloc $STORAGE $VMID vm-${VMID}-disk-0 $DISK
-qm set $VMID -scsi0 $STORAGE:vm-${VMID}-disk-0
-
-# Attach ISO and boot
-qm set $VMID -ide2 local:iso/$ISO_NAME,media=cdrom
-qm set $VMID -boot order=ide2
-
-# Start VM
+# ----------------------------
+# Démarrage automatique
+# ----------------------------
 qm start $VMID
-msg_ok "VM started. Debian will install automatically with preseed."
-msg_ok "Cura will be installed post-install via preseed late_command."
+echo "VM $VM_NAME (ID $VMID) démarrée. Cura s\'installera et se lancera automatiquement."
+'
