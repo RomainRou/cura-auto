@@ -76,7 +76,7 @@ echo "🖥️ Création de la VM $VMNAME ($VMID)..."
 qm destroy $VMID --purge || true
 qm create $VMID --name $VMNAME --memory $MEM --cores $CORES \
     --net0 virtio,bridge=$BRIDGE --scsihw virtio-scsi-pci \
-    --scsi0 $STORAGE:${DISK}G --boot c --bootdisk scsi0
+    --scsi0 $STORAGE:$DISK,format=raw --boot c --bootdisk scsi0
 
 # ----------------- Attachement ISO et Preseed -----------------
 qm set $VMID --ide2 $STORAGE:iso/$ISO_NAME,media=cdrom
