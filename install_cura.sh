@@ -11,7 +11,7 @@ BRIDGE=${BRIDGE:-vmbr0}
 USER=${USER:-cura}
 HOME_DIR="/home/$USER"
 ISO_DIR="/var/lib/vz/template/iso"
-RAW_CURA="https://raw.githubusercontent.com/RomainRou/cura-auto/main/install_cura.sh"
+CURA_APPIMAGE_URL="https://download.ultimaker.com/software/Ultimaker_Cura-5.5.0.AppImage"
 
 # ----------------- Téléchargement ISO Debian -----------------
 echo "📥 Téléchargement ISO Debian..."
@@ -42,21 +42,28 @@ d-i partman/confirm_nooverwrite boolean true
 tasksel tasksel/first multiselect standard, ssh-server
 d-i grub-installer/only_debian boolean true
 d-i grub-installer/with_other_os boolean true
-d-i preseed/late_command string in-target bash -c "wget -O /root/install_cura.sh $RAW_CURA && bash /root/install_cura.sh && cat <<EOT >/etc/systemd/system/cura.service
-[Unit]
-Description=Auto-start Ultimaker Cura
-After=graphical.target
-
+d-i preseed/late_command string in-target bash -c "
+apt update
+apt install -y xorg openbox wget libglu1-mesa libxi6 libxrender1 libxrandr2 libxinerama1
+useradd -m -s /bin/bash $USER || true
+wget -O /home/$USER/Cura.AppImage $CURA_APPIMAGE_URL
+chmod +x /home/$USER/Cura.AppImage
+chown -R $USER:$USER /home/$USER
+echo '#!/bin/bash
+/home/$USER/Cura.AppImage' > /home/$USER/.xinitrc
+chown $USER:$USER /home/$USER/.xinitrc
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat <<EOT >/etc/systemd/system/getty@tty1.service.d/override.conf
 [Service]
-User=$USER
-Environment=DISPLAY=:0
-ExecStart=/usr/bin/cura
-Restart=always
-
-[Install]
-WantedBy=graphical.target
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $USER --noclear %I \$TERM
 EOT
-systemctl enable cura.service"
+systemctl daemon-reexec
+echo 'if [ -z "\$DISPLAY" ] && [ "\$(tty)" = "/dev/tty1" ]; then
+    startx
+fi' >> /home/$USER/.bash_profile
+chown $USER:$USER /home/$USER/.bash_profile
+"
 d-i finish-install/reboot_in_progress note
 EOF
 
@@ -74,4 +81,4 @@ qm set $VMID --ide3 local:iso/preseed.cfg,media=cdrom
 # ----------------- Démarrage -----------------
 qm start $VMID
 
-echo "✅ VM créée et démarrée. Debian + Cura s'installeront automatiquement sans aucune intervention."
+echo "✅ VM créée et démarrée. Debian + Cura s'installeront automatiquement sans aucune interaction."
