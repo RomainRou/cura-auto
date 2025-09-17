@@ -6,7 +6,7 @@ set -e
 # ----------------------------
 VMID=9000
 VM_NAME="cura-vm"
-TEMPLATE="local:vztmpl/debian-12-standard_12.6-1_amd64.tar.gz"  # template cloud Debian
+ISO_PATH="/var/lib/vz/template/iso/debian-12.6.0-amd64-netinst.iso"  # ISO Debian minimal
 STORAGE="local-lvm"
 DISK_SIZE="20G"
 RAM="2048"
@@ -27,50 +27,12 @@ qm create $VMID \
   --boot c \
   --bootdisk scsi0
 
-qm importdisk $VMID $TEMPLATE $STORAGE
+qm importdisk $VMID $ISO_PATH $STORAGE
 qm set $VMID --scsihw virtio-scsi-pci --scsi0 $STORAGE:$DISK_SIZE
 qm set $VMID --ide2 $STORAGE:cloudinit
 qm set $VMID --boot c --bootdisk scsi0
 qm set $VMID --serial0 socket --vga serial0
 
-# ----------------------------
-# CONFIGURATION CLOUD-INIT
-# ----------------------------
-qm set $VMID --ciuser $USER_NAME --cipassword $USER_PASS --citype nocloud
-qm set $VMID --agent 1
-
-# ----------------------------
-# SCRIPT D'INSTALLATION CURA
-# ----------------------------
-cat << 'EOF' > /var/lib/vz/snippets/setup_cura.sh
-#!/bin/bash
-set -e
-# Mise à jour et dépendances
-apt update && apt upgrade -y
-apt install -y python3-pip python3-pyqt5 python3-setuptools xorg openbox wget
-
-# Installation de Cura
-pip3 install --upgrade pip
-pip3 install --user cura
-
-# Script de lancement automatique
-cat << "EOL" > /home/$USER/start_cura.sh
-#!/bin/bash
-xinit -- /usr/bin/openbox-session &
-sleep 2
-~/.local/bin/cura
-EOL
-chmod +x /home/$USER/start_cura.sh
-
-# Ajout au démarrage via crontab
-(crontab -l 2>/dev/null; echo "@reboot /home/$USER/start_cura.sh") | crontab -
-EOF
-
-chmod +x /var/lib/vz/snippets/setup_cura.sh
-qm set $VMID --cicustom "user=local:snippets/setup_cura.sh"
-
-# ----------------------------
-# DEMARRAGE DE LA VM
-# ----------------------------
-qm start $VMID
-echo "[+] VM $VM_NAME (ID $VMID) démarrée. Cura sera installé et lancé automatiquement."
+echo "[+] VM créée. Démarrez la VM via l'interface web Proxmox pour installer Debian minimal."
+echo "[!] Après installation de Debian, connectez-vous et exécutez le script de setup Cura :"
+echo "    wget -O /tmp/setup_cura.sh https://raw.githubusercontent.com/RomainRou/cura-auto/main/setup_cura.sh && bash /tmp/setup_cura.sh"
