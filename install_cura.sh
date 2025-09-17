@@ -1,31 +1,29 @@
 #!/bin/bash
 set -e
 
-# ----------------- Variables par défaut -----------------
+# ----------------- Variables -----------------
 VMID=${VMID:-111}
 VMNAME=${VMNAME:-CuraZeroBoot}
-DISK=${DISK:-32}       # Go
-MEM=${MEM:-4096}       # Mo
+DISK=${DISK:-32}       # taille disque en Go
+MEM=${MEM:-4096}       # mémoire en Mo
 CORES=${CORES:-2}
 BRIDGE=${BRIDGE:-vmbr0}
 USER=${USER:-cura}
-HOME_DIR="/home/$USER"
 ISO_DIR="/var/lib/vz/template/iso"
 CURA_APPIMAGE_URL="https://download.ultimaker.com/software/Ultimaker_Cura-5.5.0.AppImage"
 
-# ----------------- Forcer le stockage correct -----------------
+# ----------------- Stockage -----------------
 STORAGE="local-lvm"
 echo "💾 Utilisation du stockage : $STORAGE"
 
 # ----------------- Téléchargement ISO Debian -----------------
-echo "📥 Téléchargement ISO Debian..."
 mkdir -p $ISO_DIR
 ISO_NAME="$(wget -qO- https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/ | grep -o 'debian-[0-9.]*-amd64-netinst.iso' | head -n1)"
 ISO_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$ISO_NAME"
 ISO_PATH="$ISO_DIR/$ISO_NAME"
 wget -nc -O $ISO_PATH $ISO_URL
 
-# ----------------- Préseed Debian (auto-install) -----------------
+# ----------------- Préseed Debian -----------------
 PRESEED="$ISO_DIR/preseed.cfg"
 cat <<EOF > $PRESEED
 d-i debian-installer/locale string en_US
@@ -34,7 +32,6 @@ d-i netcfg/get_hostname string $VMNAME
 d-i netcfg/get_domain string local
 d-i mirror/country string manual
 d-i mirror/http/hostname string ftp.debian.org
-d-i mirror/http/directory string /debian
 d-i passwd/user-fullname string Cura User
 d-i passwd/username string $USER
 d-i passwd/user-password password cura
@@ -85,4 +82,4 @@ qm set $VMID --ide3 $STORAGE:iso/preseed.cfg,media=cdrom
 # ----------------- Démarrage -----------------
 qm start $VMID
 
-echo "✅ VM créée et démarrée. Debian + Cura s'installeront automatiquement sans aucune interaction."
+echo "✅ VM créée et démarrée. Debian + Cura s’installeront automatiquement sans intervention."
