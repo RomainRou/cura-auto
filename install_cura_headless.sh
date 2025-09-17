@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Debian 12 minimal VM + Cura GUI minimal autostart
+# install_cura_headless.sh
+# Debian 12 minimal VM + Cura GUI autostart
 
 set -e
 TEMP_DIR=$(mktemp -d)
@@ -7,14 +8,17 @@ pushd $TEMP_DIR >/dev/null
 
 # ---------- Variables ----------
 VMID=$(pvesh get /cluster/nextid)
-HN="debian"
+HN="cura-vm"
 CORE_COUNT=2
-RAM_SIZE=4096   # un peu plus pour GUI
+RAM_SIZE=4096
 BRG="vmbr0"
 GEN_MAC=02:$(openssl rand -hex 5 | awk '{print toupper($0)}' | sed 's/\(..\)/\1:/g; s/.$//')
 MAC="$GEN_MAC"
 START_VM="yes"
-DISK_SIZE="32G"  # pour Cura + fichiers STL
+DISK_SIZE="32G"
+
+# ---------- Latest Debian 12 Image ----------
+DEBIAN_QCOW_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2"
 
 # ---------- Create VM ----------
 echo "[INFO] Creating Debian 12 minimal VM..."
@@ -23,10 +27,13 @@ qm create $VMID -name $HN -cores $CORE_COUNT -memory $RAM_SIZE \
 
 STORAGE=$(pvesm status -content images | awk 'NR==2{print $1}')
 DISK_FILE="vm-${VMID}-disk-0.qcow2"
-qm importdisk $VMID https://cloud.debian.org/images/cloud/bookworm/20240507-1740/debian-12-nocloud-amd64-20240507-1740.qcow2 $STORAGE
+echo "[INFO] Downloading Debian 12 image..."
+wget -O $DISK_FILE $DEBIAN_QCOW_URL
 
-qm set $VMID -scsi0 ${STORAGE}:vm-$VMID-disk-0,cache=none,size=$DISK_SIZE \
-    -boot order=scsi0 -serial0 socket -vga virtio
+echo "[INFO] Importing disk..."
+qm importdisk $VMID $DISK_FILE $STORAGE
+qm set $VMID -scsi0 ${STORAGE}:vm-$VMID-disk-0,discard=on,ssd=1,format=qcow2
+qm set $VMID --boot order=scsi0 --serial0 socket --vga virtio
 
 # ---------- Start VM ----------
 if [ "$START_VM" == "yes" ]; then
@@ -42,21 +49,20 @@ apt update
 apt install -y --no-install-recommends xserver-xorg-core xserver-xorg-video-all x11-xserver-utils \
     wget curl software-properties-common sudo
 
-# Install Cura
+# Install Cura GUI
 add-apt-repository ppa:thopiekar/cura -y
 apt update
 apt install -y cura
 
-# Create a minimal X session to launch Cura
+# Create minimal X session to launch Cura
 mkdir -p /root/.xinitrc
 cat << EOF_XINIT > /root/.xinitrc
 #!/bin/bash
-# Launch Cura directly in X
 /usr/bin/cura
 EOF_XINIT
 chmod +x /root/.xinitrc
 
-# Create systemd service to start X at boot
+# systemd service to launch X and Cura at boot
 cat << EOF_SYSTEMD > /etc/systemd/system/cura-x.service
 [Unit]
 Description=Launch Cura GUI on minimal X
