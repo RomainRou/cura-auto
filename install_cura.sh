@@ -13,6 +13,10 @@ HOME_DIR="/home/$USER"
 ISO_DIR="/var/lib/vz/template/iso"
 CURA_APPIMAGE_URL="https://download.ultimaker.com/software/Ultimaker_Cura-5.5.0.AppImage"
 
+# ----------------- Détection du stockage -----------------
+STORAGE=$(pvesm status | grep -E 'lvmthin|dir' | awk 'NR==1{print $1}')
+echo "💾 Utilisation du stockage : $STORAGE"
+
 # ----------------- Téléchargement ISO Debian -----------------
 echo "📥 Téléchargement ISO Debian..."
 mkdir -p $ISO_DIR
@@ -72,11 +76,11 @@ echo "🖥️ Création de la VM $VMNAME ($VMID)..."
 qm destroy $VMID --purge || true
 qm create $VMID --name $VMNAME --memory $MEM --cores $CORES \
     --net0 virtio,bridge=$BRIDGE --scsihw virtio-scsi-pci \
-    --scsi0 local-lvm:${DISK}G --boot c --bootdisk scsi0
+    --scsi0 $STORAGE:${DISK}G --boot c --bootdisk scsi0
 
 # ----------------- Attachement ISO et Preseed -----------------
-qm set $VMID --ide2 local:iso/$ISO_NAME,media=cdrom
-qm set $VMID --ide3 local:iso/preseed.cfg,media=cdrom
+qm set $VMID --ide2 $STORAGE:iso/$ISO_NAME,media=cdrom
+qm set $VMID --ide3 $STORAGE:iso/preseed.cfg,media=cdrom
 
 # ----------------- Démarrage -----------------
 qm start $VMID
