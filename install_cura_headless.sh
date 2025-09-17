@@ -1,89 +1,81 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Debian 12 minimal VM + Cura GUI minimal autostart
+
 set -e
+TEMP_DIR=$(mktemp -d)
+pushd $TEMP_DIR >/dev/null
 
-# ----------------------------
-# CONFIGURATION
-# ----------------------------
-VMID=9000
-VM_NAME="cura-vm"
-ISO_PATH="/var/lib/vz/template/iso/debian-12.6.0-amd64-netinst.iso"  # ISO Debian minimal
-STORAGE="local-lvm"
-DISK_SIZE="20G"
-RAM="2048"
-CPUS="2"
-BRIDGE="vmbr0"
-USER_NAME="curauser"
-USER_PASS="CuraPass123"
-SNIPPET_DIR="/var/lib/vz/snippets"
+# ---------- Variables ----------
+VMID=$(pvesh get /cluster/nextid)
+HN="debian"
+CORE_COUNT=2
+RAM_SIZE=4096   # un peu plus pour GUI
+BRG="vmbr0"
+GEN_MAC=02:$(openssl rand -hex 5 | awk '{print toupper($0)}' | sed 's/\(..\)/\1:/g; s/.$//')
+MAC="$GEN_MAC"
+START_VM="yes"
+DISK_SIZE="32G"  # pour Cura + fichiers STL
 
-mkdir -p $SNIPPET_DIR
+# ---------- Create VM ----------
+echo "[INFO] Creating Debian 12 minimal VM..."
+qm create $VMID -name $HN -cores $CORE_COUNT -memory $RAM_SIZE \
+    -net0 virtio,bridge=$BRG,macaddr=$MAC -onboot 1 -ostype l26 -scsihw virtio-scsi-pci
 
-# ----------------------------
-# CREATION DE LA VM
-# ----------------------------
-echo "[+] Création de la VM $VM_NAME avec ID $VMID..."
-qm create $VMID \
-  --name $VM_NAME \
-  --memory $RAM \
-  --cores $CPUS \
-  --net0 virtio,bridge=$BRIDGE \
-  --boot c \
-  --bootdisk scsi0
+STORAGE=$(pvesm status -content images | awk 'NR==2{print $1}')
+DISK_FILE="vm-${VMID}-disk-0.qcow2"
+qm importdisk $VMID https://cloud.debian.org/images/cloud/bookworm/20240507-1740/debian-12-nocloud-amd64-20240507-1740.qcow2 $STORAGE
 
-# Création du disque LVM correctement
-qm set $VMID --scsihw virtio-scsi-pci --scsi0 $STORAGE:${VMID}-disk-0,size=$DISK_SIZE
+qm set $VMID -scsi0 ${STORAGE}:vm-$VMID-disk-0,cache=none,size=$DISK_SIZE \
+    -boot order=scsi0 -serial0 socket -vga virtio
 
-# Ajout de l'ISO comme CD-ROM pour installation
-qm set $VMID --ide2 $STORAGE:iso,media=cdrom
-
-# Boot et console
-qm set $VMID --boot c --bootdisk scsi0
-qm set $VMID --serial0 socket --vga serial0
-
-echo "[+] VM créée. Démarrez la VM via l'interface web Proxmox pour installer Debian minimal."
-
-# ----------------------------
-# SCRIPT DE SETUP CURA
-# ----------------------------
-cat << 'EOF' > $SNIPPET_DIR/setup_cura.sh
-#!/bin/bash
-set -e
-
-# Mise à jour et dépendances
-apt update && apt upgrade -y
-apt install -y python3-pip python3-pyqt5 python3-setuptools xorg openbox wget sudo
-
-# Création de l'utilisateur Cura
-if ! id -u curauser >/dev/null 2>&1; then
-    useradd -m -s /bin/bash curauser
-    echo "curauser:CuraPass123" | chpasswd
-    usermod -aG sudo curauser
+# ---------- Start VM ----------
+if [ "$START_VM" == "yes" ]; then
+    echo "[INFO] Starting VM $VMID..."
+    qm start $VMID
 fi
 
-# Installation de Cura
-sudo -u curauser -H bash -c "pip3 install --upgrade pip"
-sudo -u curauser -H bash -c "pip3 install --user cura"
+# ---------- Install minimal X + Cura ----------
+echo "[INFO] Installing minimal X server and Cura..."
+qm terminal $VMID << 'EOF'
+set -e
+apt update
+apt install -y --no-install-recommends xserver-xorg-core xserver-xorg-video-all x11-xserver-utils \
+    wget curl software-properties-common sudo
 
-# Script de lancement automatique
-cat << "EOL" > /home/curauser/start_cura.sh
+# Install Cura
+add-apt-repository ppa:thopiekar/cura -y
+apt update
+apt install -y cura
+
+# Create a minimal X session to launch Cura
+mkdir -p /root/.xinitrc
+cat << EOF_XINIT > /root/.xinitrc
 #!/bin/bash
-xinit -- /usr/bin/openbox-session &
-sleep 2
-/home/curauser/.local/bin/cura
-EOL
-chmod +x /home/curauser/start_cura.sh
-(crontab -l 2>/dev/null; echo "@reboot /home/curauser/start_cura.sh") | crontab -u curauser -
+# Launch Cura directly in X
+/usr/bin/cura
+EOF_XINIT
+chmod +x /root/.xinitrc
 
-echo "[+] Cura installé et configuré pour démarrage automatique"
+# Create systemd service to start X at boot
+cat << EOF_SYSTEMD > /etc/systemd/system/cura-x.service
+[Unit]
+Description=Launch Cura GUI on minimal X
+After=network.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/startx /root/.xinitrc --
+Restart=always
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=multi-user.target
+EOF_SYSTEMD
+
+systemctl enable cura-x.service
+systemctl start cura-x.service
 EOF
 
-chmod +x $SNIPPET_DIR/setup_cura.sh
-
-echo "[+] Script de setup Cura créé. Une fois Debian installé dans la VM, connectez-vous et exécutez :"
-echo "    bash /var/lib/vz/snippets/setup_cura.sh"
-
-# ----------------------------
-# LANCEMENT DE LA VM
-# ----------------------------
-qm start $VMID
-echo "[+] VM $VM_NAME (ID $VMID) démarrée."
+popd >/dev/null
+rm -rf $TEMP_DIR
+echo "[SUCCESS] Debian 12 VM with minimal X + Cura GUI installed and autostart enabled!"
