@@ -4,8 +4,8 @@ set -e
 # ----------------- Variables par défaut -----------------
 VMID=${VMID:-111}
 VMNAME=${VMNAME:-CuraZeroBoot}
-DISK=${DISK:-15}       # Go
-MEM=${MEM:-2048}       # Mo
+DISK=${DISK:-32}       # Go
+MEM=${MEM:-4096}       # Mo
 CORES=${CORES:-2}
 BRIDGE=${BRIDGE:-vmbr0}
 USER=${USER:-cura}
@@ -13,12 +13,8 @@ HOME_DIR="/home/$USER"
 ISO_DIR="/var/lib/vz/template/iso"
 CURA_APPIMAGE_URL="https://download.ultimaker.com/software/Ultimaker_Cura-5.5.0.AppImage"
 
-# ----------------- Détection du stockage valide -----------------
-STORAGE=$(pvesm status | grep -E 'lvmthin|dir' | grep -v Sauvegardes | awk 'NR==1{print $1}')
-if [ -z "$STORAGE" ]; then
-    echo "❌ Aucun stockage valide trouvé pour créer un disque VM."
-    exit 1
-fi
+# ----------------- Forcer le stockage correct -----------------
+STORAGE="local-lvm"
 echo "💾 Utilisation du stockage : $STORAGE"
 
 # ----------------- Téléchargement ISO Debian -----------------
