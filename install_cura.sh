@@ -1,37 +1,46 @@
 #!/bin/bash
-USER="cura"
+set -e
 
-apt update && apt upgrade -y
-apt install -y xorg openbox xinit xserver-xorg-video-fbdev wget \
-    libglu1-mesa libxi6 libxrender1 libxrandr2 libxinerama1
+# ----------------- Variables par défaut -----------------
+VMID=${VMID:-111}
+VMNAME=${VMNAME:-CuraZeroBoot}
+DISK=${DISK:-15}       # Go
+MEM=${MEM:-2048}       # Mo
+CORES=${CORES:-2}
+BRIDGE=${BRIDGE:-vmbr0}
+USER=${USER:-cura}
+HOME_DIR="/home/$USER"
+ISO_DIR="/var/lib/vz/template/iso"
+CURA_APPIMAGE_URL="https://download.ultimaker.com/software/Ultimaker_Cura-5.5.0.AppImage"
 
-# Cura AppImage
-sudo -u $USER wget -O /home/$USER/Cura.AppImage https://download.ultimaker.com/software/Ultimaker_Cura-5.x.x.AppImage
-sudo -u $USER chmod +x /home/$USER/Cura.AppImage
+# ----------------- Téléchargement ISO Debian -----------------
+echo "📥 Téléchargement ISO Debian..."
+mkdir -p $ISO_DIR
+ISO_NAME="$(wget -qO- https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/ | grep -o 'debian-[0-9.]*-amd64-netinst.iso' | head -n1)"
+ISO_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$ISO_NAME"
+ISO_PATH="$ISO_DIR/$ISO_NAME"
+wget -nc -O $ISO_PATH $ISO_URL
 
-# Lancement automatique
-echo '#!/bin/bash
-/home/cura/Cura.AppImage' > /home/cura/.xinitrc
-chmod +x /home/cura/.xinitrc
-chown cura:cura /home/cura/.xinitrc
+# ----------------- Création de la VM -----------------
+echo "🖥️ Création de la VM $VMNAME ($VMID)..."
+qm destroy $VMID --purge || true
+qm create $VMID --name $VMNAME --memory $MEM --cores $CORES \
+    --net0 virtio,bridge=$BRIDGE --scsihw virtio-scsi-pci \
+    --scsi0 local-lvm:${DISK}G --boot c --bootdisk scsi0
 
-# Autologin sur TTY1
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-cat <<EOT > /etc/systemd/system/getty@tty1.service.d/override.conf
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin $USER --noclear %I \$TERM
-EOT
+# ----------------- Attachement ISO -----------------
+qm set $VMID --ide2 local:iso/$ISO_NAME,media=cdrom
 
-systemctl daemon-reexec
+# ----------------- Démarrage VM -----------------
+qm start $VMID
+echo "✅ VM créée et démarrée. Debian sera installée automatiquement avec Cura."
 
-# Auto-start X
-echo 'if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-    startx
-fi' >> /home/cura/.bash_profile
-chown cura:cura /home/cura/.bash_profile
-
-# Nettoyage
-systemctl disable apache2 bluetooth cups
-
-echo "✅ Installation terminée – Cura démarrera automatiquement au prochain boot."
+# ----------------- Instructions post-install -----------------
+echo
+echo "⚠️ Après le démarrage de la VM :"
+echo "1️⃣ Connecte-toi à la console Proxmox de la VM."
+echo "2️⃣ Sélectionne 'Install', appuie sur [TAB] et ajoute :"
+echo "   auto=true priority=critical preseed/file=/cdrom/preseed.cfg"
+echo "3️⃣ Appuie sur [Entrée]. L'installation Debian + Cura sera entièrement automatique."
+echo
+echo "ℹ️ Après l'installation, Cura démarrera automatiquement au boot via systemd ou .xinitrc."
