@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Copyright (c) 2025
-# Author: RomainRou
-# License: MIT
-# GitHub: https://github.com/RomainRou/cura-auto
+set -e
+
+# ========================
+#  Auto-install Debian + Cura on Proxmox
+# ========================
 
 function header_info {
   clear
@@ -18,72 +19,54 @@ EOF
 header_info
 echo -e "\n Loading..."
 
-GEN_MAC=02:$(openssl rand -hex 5 | awk '{print toupper($0)}' | sed 's/\(..\)/\1:/g; s/.$//')
-NEXTID=$(pvesh get /cluster/nextid)
-
-VMID=${VMID:-$NEXTID}
+# -------- USER VARIABLES --------
+VMID=${VMID:-111}
 VMNAME=${VMNAME:-CuraZeroBoot}
-MEM=${MEM:-4096}
+MEM=${MEM:-4096}           # RAM in MB
 CORES=${CORES:-2}
-DISK=${DISK:-32}       # Go
+DISK=${DISK:-32}           # Disk in GB
 BRIDGE=${BRIDGE:-vmbr0}
-USER=${USER:-cura}
+STORAGE=${STORAGE:-local-lvm}
+ISO_NAME="debian-13.1.0-amd64-netinst.iso"
+ISO_PATH="/var/lib/vz/template/iso/$ISO_NAME"
+PRESEED_DIR="/var/www/html/cura"
+PRESEED_URL="http://$(hostname -I | awk '{print $1}')/cura/preseed.cfg"
+CURA_SCRIPT_URL="https://raw.githubusercontent.com/RomainRou/cura-auto/main/install_cura.sh"
 
-STORAGE_DISK="local-lvm"
-STORAGE_ISO="local"
-ISO_DIR="/var/lib/vz/template/iso"
-CURA_APPIMAGE_URL="https://download.ultimaker.com/software/Ultimaker_Cura-5.5.0.AppImage"
+# -------- FUNCTIONS --------
+function msg_info()  { echo -ne "[..] $1...\n"; }
+function msg_ok()    { echo -e "[✓] $1"; }
+function msg_error() { echo -e "[✗] $1"; }
 
-set -e
-trap 'error_handler $LINENO "$BASH_COMMAND"' ERR
+# -------- CHECK ROOT --------
+if [[ $EUID -ne 0 ]]; then
+  msg_error "Run this script as root."
+  exit 1
+fi
 
-function error_handler() {
-  local exit_code="$?"
-  local line_number="$1"
-  local command="$2"
-  echo -e "[ERROR] in line $line_number: exit code $exit_code: $command"
-  cleanup_vmid
-}
+# -------- DOWNLOAD ISO --------
+mkdir -p /var/lib/vz/template/iso
+if [ ! -f "$ISO_PATH" ]; then
+  msg_info "Downloading Debian ISO..."
+  wget -O "$ISO_PATH" "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$ISO_NAME"
+  msg_ok "Downloaded $ISO_NAME"
+else
+  msg_ok "Debian ISO already exists"
+fi
 
-function cleanup_vmid() {
-  if qm status $VMID &>/dev/null; then
-    qm stop $VMID &>/dev/null
-    qm destroy $VMID &>/dev/null
-  fi
-}
-
-function msg_info() { echo -ne " [..] $1..."; }
-function msg_ok() { echo -e " [✓] $1"; }
-
-check_root() {
-  if [[ "$(id -u)" -ne 0 ]]; then
-    echo "Please run as root."; exit
-  fi
-}
-
-check_root
-
-# ----------------- Téléchargement ISO -----------------
-mkdir -p $ISO_DIR
-msg_info "Downloading Debian ISO"
-ISO_NAME="$(wget -qO- https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/ | grep -o 'debian-[0-9.]*-amd64-netinst.iso' | head -n1)"
-ISO_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$ISO_NAME"
-ISO_PATH="$ISO_DIR/$ISO_NAME"
-wget -nc -O $ISO_PATH $ISO_URL
-msg_ok "Downloaded $ISO_NAME"
-
-# ----------------- Préseed -----------------
-PRESEED="$ISO_DIR/preseed.cfg"
-cat <<EOF > $PRESEED
+# -------- CREATE PRESEED --------
+mkdir -p "$PRESEED_DIR"
+cat <<EOF > $PRESEED_DIR/preseed.cfg
 d-i debian-installer/locale string en_US
 d-i keyboard-configuration/xkb-keymap select us
-d-i netcfg/get_hostname string $VMNAME
+d-i netcfg/get_hostname string cura-vm
 d-i netcfg/get_domain string local
 d-i mirror/country string manual
 d-i mirror/http/hostname string ftp.debian.org
 d-i mirror/http/directory string /debian
+d-i mirror/http/proxy string
 d-i passwd/user-fullname string Cura User
-d-i passwd/username string $USER
+d-i passwd/username string cura
 d-i passwd/user-password password cura
 d-i passwd/user-password-again password cura
 d-i partman-auto/method string regular
@@ -91,43 +74,30 @@ d-i partman-auto/choose_recipe select atomic
 d-i partman/confirm boolean true
 d-i partman/confirm_nooverwrite boolean true
 tasksel tasksel/first multiselect standard, ssh-server
-d-i grub-installer/only_debian boolean true
-d-i preseed/late_command string in-target bash -c "
-apt update
-apt install -y xorg openbox wget libglu1-mesa libxi6 libxrender1 libxrandr2 libxinerama1
-wget -O /home/$USER/Cura.AppImage $CURA_APPIMAGE_URL
-chmod +x /home/$USER/Cura.AppImage
-chown -R $USER:$USER /home/$USER
-echo '#!/bin/bash
-/home/$USER/Cura.AppImage' > /home/$USER/.xinitrc
-chown $USER:$USER /home/$USER/.xinitrc
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-cat <<EOT >/etc/systemd/system/getty@tty1.service.d/override.conf
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin $USER --noclear %I \$TERM
-EOT
-systemctl daemon-reexec
-echo 'if [ -z "\$DISPLAY" ] && [ "\$(tty)" = "/dev/tty1" ]; then
-    startx
-fi' >> /home/$USER/.bash_profile
-chown $USER:$USER /home/$USER/.bash_profile
-"
+d-i finish-install/reboot_in_progress note
+d-i preseed/late_command string wget -O /tmp/install_cura.sh $CURA_SCRIPT_URL && bash /tmp/install_cura.sh
 EOF
+msg_ok "Preseed file created"
 
-# ----------------- Création VM -----------------
-msg_info "Creating VM $VMNAME ($VMID) on $STORAGE_DISK"
-qm destroy $VMID --purge || true
-qm create $VMID --name $VMNAME --memory $MEM --cores $CORES \
-  --net0 virtio,bridge=$BRIDGE,macaddr=$GEN_MAC --scsihw virtio-scsi-pci \
-  --scsi0 $STORAGE_DISK:$DISK,format=raw --boot c --bootdisk scsi0
-msg_ok "VM Created"
+# -------- CREATE VM --------
+msg_info "Creating VM $VMNAME ($VMID) on $STORAGE..."
+qm create $VMID \
+    -name $VMNAME \
+    -memory $MEM \
+    -cores $CORES \
+    -net0 virtio,bridge=$BRIDGE \
+    -scsihw virtio-scsi-pci \
+    -ostype l26
 
-# ----------------- Attachement ISO et Preseed -----------------
-qm set $VMID --ide2 $STORAGE_ISO:iso/$ISO_NAME,media=cdrom
-qm set $VMID --ide3 $STORAGE_ISO:iso/preseed.cfg,media=cdrom
+# Create disk on local-lvm
+pvesm alloc $STORAGE $VMID vm-${VMID}-disk-0 $DISK
+qm set $VMID -scsi0 $STORAGE:vm-${VMID}-disk-0
 
-# ----------------- Démarrage VM -----------------
-msg_info "Starting VM $VMNAME"
+# Attach ISO and boot
+qm set $VMID -ide2 local:iso/$ISO_NAME,media=cdrom
+qm set $VMID -boot order=ide2
+
+# Start VM
 qm start $VMID
-msg_ok "VM started! Debian + Cura will install automatically"
+msg_ok "VM started. Debian will install automatically with preseed."
+msg_ok "Cura will be installed post-install via preseed late_command."
